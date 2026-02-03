@@ -74,6 +74,31 @@ function buildMergedText(chat) {
     return lines.join('\n');
 }
 
+function parseMergedText(text) {
+    const separator = '─'.repeat(40);
+    const blocks = text.split(separator);
+    const chat = [];
+    for (const block of blocks) {
+        const trimmed = block.trim();
+        if (!trimmed) continue;
+        const firstNewline = trimmed.indexOf('\n');
+        if (firstNewline === -1) {
+            const roleMatch = trimmed.match(/^\[([^\]]+)\]$/);
+            if (roleMatch) {
+                chat.push({ role: roleMatch[1], content: '' });
+            }
+        } else {
+            const firstLine = trimmed.substring(0, firstNewline);
+            const content = trimmed.substring(firstNewline + 1);
+            const roleMatch = firstLine.match(/^\[([^\]]+)\]$/);
+            if (roleMatch) {
+                chat.push({ role: roleMatch[1], content });
+            }
+        }
+    }
+    return chat;
+}
+
 async function showPromptInspector(input) {
     const template = $(await renderExtensionTemplateAsync(templatePath, 'template'));
     const splitContainer = template.find('#pv-split-container');
@@ -92,11 +117,19 @@ async function showPromptInspector(input) {
         let totalTokens = 0;
         let totalChars = 0;
         if (isJsonMode) {
-            const textareas = template.find('.pv-message-textarea');
-            for (const textarea of textareas) {
-                const text = $(textarea).val();
-                totalTokens += await getTokenCountAsync(text);
-                totalChars += text.length;
+            if (currentView === 'merged') {
+                const chat = parseMergedText(mergedTextarea.val());
+                for (const message of chat) {
+                    totalTokens += await getTokenCountAsync(message.content);
+                    totalChars += message.content.length;
+                }
+            } else {
+                const textareas = template.find('.pv-message-textarea');
+                for (const textarea of textareas) {
+                    const text = $(textarea).val();
+                    totalTokens += await getTokenCountAsync(text);
+                    totalChars += text.length;
+                }
             }
         } else {
             const text = template.find('#pv-plain-text-editor').val();
@@ -117,12 +150,67 @@ async function showPromptInspector(input) {
         mergedTextarea.val(buildMergedText(chat));
     };
 
+    const buildSplitBlocks = async (chat) => {
+        splitContainer.empty();
+        for (const message of chat) {
+            const block = $(`
+                <div class="pv-message-block" data-role="${message.role}">
+                    <div class="pv-message-header">
+                        <span class="pv-line-char-count" style="font-weight: normal; color: #FFD700; margin-right: 10px;"></span>
+                        <span class="pv-role">${message.role}</span>
+                    </div>
+                    <div class="pv-message-content">
+                        <textarea class="pv-message-textarea"></textarea>
+                    </div>
+                </div>
+            `);
+
+            const textarea = block.find('textarea');
+            textarea.val(message.content);
+            splitContainer.append(block);
+
+            const lineCharCountDisplay = block.find('.pv-line-char-count');
+            const updateLineCharCount = async () => {
+                const text = textarea.val();
+                const lineTokens = await getTokenCountAsync(text);
+                const lineChars = text.length;
+                lineCharCountDisplay.text(`(${lineTokens} Tokens / ${lineChars} 字)`);
+            };
+
+            await updateLineCharCount();
+            textarea.on('input', async () => {
+                await updateLineCharCount();
+                await updateTotalCharCount();
+            });
+
+            block.find('.pv-message-header').on('click', function (e) {
+                if ($(e.target).is('.pv-line-char-count')) {
+                    e.stopPropagation();
+                    return;
+                }
+                const content = $(this).siblings('.pv-message-content');
+                const parentBlock = $(this).closest('.pv-message-block');
+                parentBlock.toggleClass('expanded');
+                content.slideToggle('fast');
+            });
+        }
+    };
+
+    mergedTextarea.on('input', async () => {
+        await updateTotalCharCount();
+    });
+
     // View toggle logic
-    splitBtn.on('click', () => {
+    splitBtn.on('click', async () => {
         if (currentView === 'split') return;
         currentView = 'split';
         splitBtn.addClass('pv-toggle-active');
         mergedBtn.removeClass('pv-toggle-active');
+        if (isJsonMode) {
+            const chat = parseMergedText(mergedTextarea.val());
+            await buildSplitBlocks(chat);
+            await updateTotalCharCount();
+        }
         splitContainer.show();
         mergedContainer.hide();
     });
@@ -141,49 +229,7 @@ async function showPromptInspector(input) {
         const chat = JSON.parse(input);
         if (Array.isArray(chat)) {
             isJsonMode = true;
-            splitContainer.empty();
-            for (const message of chat) {
-                const block = $(`
-                    <div class="pv-message-block" data-role="${message.role}">
-                        <div class="pv-message-header">
-                            <span class="pv-line-char-count" style="font-weight: normal; color: #FFD700; margin-right: 10px;"></span>
-                            <span class="pv-role">${message.role}</span>
-                        </div>
-                        <div class="pv-message-content">
-                            <textarea class="pv-message-textarea"></textarea>
-                        </div>
-                    </div>
-                `);
-
-                const textarea = block.find('textarea');
-                textarea.val(message.content);
-                splitContainer.append(block);
-
-                const lineCharCountDisplay = block.find('.pv-line-char-count');
-                const updateLineCharCount = async () => {
-                    const text = textarea.val();
-                    const lineTokens = await getTokenCountAsync(text);
-                    const lineChars = text.length;
-                    lineCharCountDisplay.text(`(${lineTokens} Tokens / ${lineChars} 字)`);
-                };
-
-                await updateLineCharCount();
-                textarea.on('input', async () => {
-                    await updateLineCharCount();
-                    await updateTotalCharCount();
-                });
-
-                block.find('.pv-message-header').on('click', function (e) {
-                    if ($(e.target).is('.pv-line-char-count')) {
-                        e.stopPropagation();
-                        return;
-                    }
-                    const content = $(this).siblings('.pv-message-content');
-                    const parentBlock = $(this).closest('.pv-message-block');
-                    parentBlock.toggleClass('expanded');
-                    content.slideToggle('fast');
-                });
-            }
+            await buildSplitBlocks(chat);
         } else {
             throw new Error('Input is not a chat array.');
         }
@@ -276,13 +322,18 @@ async function showPromptInspector(input) {
     }
 
     if (isJsonMode) {
-        const newChat = [];
-        template.find('.pv-message-block').each(function () {
-            const role = $(this).data('role');
-            const content = $(this).find('textarea').val();
-            newChat.push({ role, content });
-        });
-        return JSON.stringify(newChat, null, 4);
+        if (currentView === 'merged') {
+            const chat = parseMergedText(mergedTextarea.val());
+            return JSON.stringify(chat, null, 4);
+        } else {
+            const newChat = [];
+            template.find('.pv-message-block').each(function () {
+                const role = $(this).data('role');
+                const content = $(this).find('textarea').val();
+                newChat.push({ role, content });
+            });
+            return JSON.stringify(newChat, null, 4);
+        }
     } else {
         return template.find('#pv-plain-text-editor').val();
     }

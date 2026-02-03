@@ -1,7 +1,7 @@
 {
   "name": "提示词查看",
   "display_name": "提示词查看",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "author": "Wx-2025",
   "description": "提示词查看插件，可在生成前查看和编辑完整提示词，支持分割查看和合并查看两种模式。",
   "minSillyTavernVersion": "1.10.0",
